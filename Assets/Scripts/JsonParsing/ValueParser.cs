@@ -5,7 +5,7 @@ namespace Jinhyeong_JsonParsing
 {
     public static class ValueParser
     {
-        public const char ArrayDelimiter = '|';
+        public const char ArrayDelimiter = ',';
 
         public static int ParseInt(string raw)
         {

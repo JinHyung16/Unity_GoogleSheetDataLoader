@@ -1,0 +1,23 @@
+using Jinhyeong_JsonParsing;
+
+namespace Jinhyeong_GameData.Containers
+{
+    public abstract class StageDictionaryContainer
+        : DictionaryContainer<int, Stage>
+    {
+        public override string Name => "Stage";
+
+        protected override Stage Parse(DataTable table, int row)
+        {
+            int key = table.GetInt(row, "id");
+            if (key <= 0)
+            {
+                return null;
+            }
+
+            var data = new Stage();
+            data.__Parse(table, row);
+            return data;
+        }
+    }
+}

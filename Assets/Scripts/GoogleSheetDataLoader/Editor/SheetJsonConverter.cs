@@ -97,6 +97,19 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
                 {
                     savedPaths.Add(savedPath);
                 }
+
+                try
+                {
+                    List<string> generatedPaths = DataContainerCodeGenerator.Generate(data);
+                    if (generatedPaths != null)
+                    {
+                        savedPaths.AddRange(generatedPaths);
+                    }
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[GoogleSheetSync] '{title}' 컨테이너 코드 생성 실패: {e.Message}");
+                }
             }
 
             AssetDatabase.Refresh();

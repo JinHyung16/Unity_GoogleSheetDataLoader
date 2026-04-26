@@ -1,0 +1,303 @@
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+using Jinhyeong_JsonParsing;
+
+namespace Jinhyeong_GoogleSheetDataLoader.Editor
+{
+    public static class DataContainerCodeGenerator
+    {
+        public const string GameDataRoot = "Assets/GameData";
+        public const string GeneratedFolder = "Assets/GameData/Generated";
+        public const string GeneratedContainersFolder = "Assets/GameData/Generated/Containers";
+        public const string PartialClassFolder = "Assets/GameData/PartialClass";
+        public const string UserContainersFolder = "Assets/GameData/Containers";
+
+        public const string TargetNamespace = "Jinhyeong_GameData";
+        public const string ContainersNamespace = "Jinhyeong_GameData.Containers";
+
+        public static List<string> Generate(SheetData sheet)
+        {
+            var written = new List<string>();
+            if (sheet == null)
+            {
+                return written;
+            }
+            if (string.IsNullOrEmpty(sheet.TableName))
+            {
+                return written;
+            }
+            if (sheet.Columns == null || sheet.Columns.Count == 0)
+            {
+                return written;
+            }
+            if (sheet.Types == null || sheet.Types.Count < sheet.Columns.Count)
+            {
+                return written;
+            }
+
+            EnsureFolders();
+
+            string dataClassName = SanitizeIdentifier(sheet.TableName);
+            string keyColumnName = sheet.Columns[0];
+            string keyPropertyName = Pascalize(keyColumnName);
+
+            string dataPath = WriteDataPartialFile(dataClassName, keyPropertyName, sheet);
+            written.Add(dataPath);
+
+            string containerPath = WriteDictionaryContainerFile(dataClassName, keyColumnName, sheet.TableName);
+            written.Add(containerPath);
+
+            WriteUserContainerStubIfMissing(dataClassName);
+
+            return written;
+        }
+
+        private static string WriteDataPartialFile(string dataClassName, string keyPropertyName, SheetData sheet)
+        {
+            var sb = new StringBuilder();
+            if (UsesEnumType(sheet))
+            {
+                sb.AppendLine("using Jinhyeong_GeneratedEnums;");
+            }
+            sb.AppendLine("using Jinhyeong_JsonParsing;");
+            sb.AppendLine();
+            sb.AppendLine("namespace " + TargetNamespace);
+            sb.AppendLine("{");
+            sb.AppendLine("    public partial class " + dataClassName + " : IDataKey<int>, IData");
+            sb.AppendLine("    {");
+
+            for (int i = 0; i < sheet.Columns.Count; i++)
+            {
+                string column = sheet.Columns[i];
+                string typeStr = sheet.Types[i];
+                string csharpType = MapTypeToCSharp(typeStr);
+                string propName = Pascalize(column);
+
+                sb.AppendLine("        public " + csharpType + " " + propName + " { get; private set; }");
+            }
+
+            sb.AppendLine();
+            sb.AppendLine("        public int Key => " + keyPropertyName + ";");
+            sb.AppendLine();
+            sb.AppendLine("        public void __Parse(DataTable table, int row)");
+            sb.AppendLine("        {");
+
+            for (int i = 0; i < sheet.Columns.Count; i++)
+            {
+                string column = sheet.Columns[i];
+                string typeStr = sheet.Types[i];
+                string getterCall = MapTypeToGetter(typeStr, column);
+                string propName = Pascalize(column);
+
+                sb.AppendLine("            " + propName + " = " + getterCall + ";");
+            }
+
+            sb.AppendLine("        }");
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
+
+            string path = Path.Combine(GeneratedFolder, dataClassName + ".cs").Replace('\\', '/');
+            File.WriteAllText(path, sb.ToString());
+            return path;
+        }
+
+        private static string WriteDictionaryContainerFile(string dataClassName, string keyColumnName, string tableName)
+        {
+            string baseClassName = dataClassName + "DictionaryContainer";
+
+            var sb = new StringBuilder();
+            sb.AppendLine("using Jinhyeong_JsonParsing;");
+            sb.AppendLine();
+            sb.AppendLine("namespace " + ContainersNamespace);
+            sb.AppendLine("{");
+            sb.AppendLine("    public abstract class " + baseClassName);
+            sb.AppendLine("        : DictionaryContainer<int, " + dataClassName + ">");
+            sb.AppendLine("    {");
+            sb.AppendLine("        public override string Name => \"" + tableName + "\";");
+            sb.AppendLine();
+            sb.AppendLine("        protected override " + dataClassName + " Parse(DataTable table, int row)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            int key = table.GetInt(row, \"" + keyColumnName + "\");");
+            sb.AppendLine("            if (key <= 0)");
+            sb.AppendLine("            {");
+            sb.AppendLine("                return null;");
+            sb.AppendLine("            }");
+            sb.AppendLine();
+            sb.AppendLine("            var data = new " + dataClassName + "();");
+            sb.AppendLine("            data.__Parse(table, row);");
+            sb.AppendLine("            return data;");
+            sb.AppendLine("        }");
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
+
+            string path = Path.Combine(GeneratedContainersFolder, baseClassName + ".cs").Replace('\\', '/');
+            File.WriteAllText(path, sb.ToString());
+            return path;
+        }
+
+        private static void WriteUserContainerStubIfMissing(string dataClassName)
+        {
+            string userClassName = dataClassName + "Container";
+            string baseClassName = dataClassName + "DictionaryContainer";
+            string path = Path.Combine(UserContainersFolder, userClassName + ".cs").Replace('\\', '/');
+            if (File.Exists(path))
+            {
+                return;
+            }
+
+            var sb = new StringBuilder();
+            sb.AppendLine("namespace " + TargetNamespace);
+            sb.AppendLine("{");
+            sb.AppendLine("    public class " + userClassName);
+            sb.AppendLine("        : Containers." + baseClassName);
+            sb.AppendLine("    {");
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
+
+            File.WriteAllText(path, sb.ToString());
+        }
+
+        private static bool UsesEnumType(SheetData sheet)
+        {
+            for (int i = 0; i < sheet.Types.Count; i++)
+            {
+                if (IsEnumType(sheet.Types[i]))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool IsEnumType(string typeStr)
+        {
+            string t = typeStr != null ? typeStr.Trim() : string.Empty;
+            if (string.IsNullOrEmpty(t)) return false;
+            if (t == "int" || t == "float" || t == "string") return false;
+            if (t == "int[]" || t == "float[]" || t == "string[]") return false;
+            if (t == "intArray" || t == "floatArray" || t == "stringArray") return false;
+            return true;
+        }
+
+        private static string MapTypeToCSharp(string typeStr)
+        {
+            string t = typeStr != null ? typeStr.Trim() : string.Empty;
+            if (t == "int") return "int";
+            if (t == "float") return "float";
+            if (t == "string") return "string";
+            if (t == "int[]" || t == "intArray") return "int[]";
+            if (t == "float[]" || t == "floatArray") return "float[]";
+            if (t == "string[]" || t == "stringArray") return "string[]";
+            if (t.EndsWith("[]"))
+            {
+                return t;
+            }
+            if (t.EndsWith("Array"))
+            {
+                return t.Substring(0, t.Length - "Array".Length) + "[]";
+            }
+            return t;
+        }
+
+        private static string MapTypeToGetter(string typeStr, string columnName)
+        {
+            string t = typeStr != null ? typeStr.Trim() : string.Empty;
+            string col = "\"" + columnName + "\"";
+
+            if (t == "int") return "table.GetInt(row, " + col + ")";
+            if (t == "float") return "table.GetFloat(row, " + col + ")";
+            if (t == "string") return "table.GetString(row, " + col + ")";
+            if (t == "int[]" || t == "intArray") return "table.GetIntArray(row, " + col + ")";
+            if (t == "float[]" || t == "floatArray") return "table.GetFloatArray(row, " + col + ")";
+            if (t == "string[]" || t == "stringArray") return "table.GetStringArray(row, " + col + ")";
+
+            if (t.EndsWith("[]"))
+            {
+                string enumName = t.Substring(0, t.Length - 2);
+                return "table.GetEnumArray<" + enumName + ">(row, " + col + ")";
+            }
+            if (t.EndsWith("Array"))
+            {
+                string enumName = t.Substring(0, t.Length - "Array".Length);
+                return "table.GetEnumArray<" + enumName + ">(row, " + col + ")";
+            }
+            return "table.GetEnum<" + t + ">(row, " + col + ")";
+        }
+
+        private static string Pascalize(string raw)
+        {
+            string sanitized = SanitizeIdentifier(raw);
+            if (string.IsNullOrEmpty(sanitized))
+            {
+                return "_";
+            }
+
+            var sb = new StringBuilder(sanitized.Length);
+            bool nextUpper = true;
+            for (int i = 0; i < sanitized.Length; i++)
+            {
+                char c = sanitized[i];
+                if (c == '_')
+                {
+                    nextUpper = true;
+                    continue;
+                }
+                if (nextUpper)
+                {
+                    sb.Append(char.ToUpperInvariant(c));
+                    nextUpper = false;
+                    continue;
+                }
+                sb.Append(c);
+            }
+            return sb.ToString();
+        }
+
+        private static string SanitizeIdentifier(string raw)
+        {
+            if (string.IsNullOrEmpty(raw))
+            {
+                return "_";
+            }
+            var sb = new StringBuilder(raw.Length);
+            for (int i = 0; i < raw.Length; i++)
+            {
+                char c = raw[i];
+                bool valid = (c >= 'a' && c <= 'z')
+                             || (c >= 'A' && c <= 'Z')
+                             || (c >= '0' && c <= '9')
+                             || c == '_';
+                if (valid)
+                {
+                    sb.Append(c);
+                    continue;
+                }
+                sb.Append('_');
+            }
+            if (sb.Length > 0 && sb[0] >= '0' && sb[0] <= '9')
+            {
+                sb.Insert(0, '_');
+            }
+            return sb.ToString();
+        }
+
+        private static void EnsureFolders()
+        {
+            EnsureFolder(GameDataRoot);
+            EnsureFolder(GeneratedFolder);
+            EnsureFolder(GeneratedContainersFolder);
+            EnsureFolder(PartialClassFolder);
+            EnsureFolder(UserContainersFolder);
+        }
+
+        private static void EnsureFolder(string path)
+        {
+            if (Directory.Exists(path))
+            {
+                return;
+            }
+            Directory.CreateDirectory(path);
+        }
+    }
+}
