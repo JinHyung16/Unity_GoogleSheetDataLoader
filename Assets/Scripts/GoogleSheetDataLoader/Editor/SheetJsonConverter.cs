@@ -19,7 +19,12 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
             @"docs\.google\.com/spreadsheets/d/(?<id>[a-zA-Z0-9_-]{20,})",
             RegexOptions.Compiled);
 
-        public static async Task<List<string>> SyncAllAsync(string url, string clientId, string clientSecret, string enumSheetName)
+        public static async Task<SyncResult> SyncAllAsync(
+            string url,
+            string clientId,
+            string clientSecret,
+            IEnumerable<string> enumSheetNames = null,
+            string enumOutputFileName = null)
         {
             if (string.IsNullOrWhiteSpace(url))
             {
@@ -32,9 +37,6 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
                 throw new ArgumentException("URL에서 스프레드시트 ID를 추출할 수 없습니다");
             }
 
-            string normalizedEnumSheet = enumSheetName != null ? enumSheetName.Trim() : string.Empty;
-            bool hasEnumSheet = string.IsNullOrEmpty(normalizedEnumSheet) == false;
-
             string accessToken = await OAuth2Authenticator.EnsureAccessTokenAsync(clientId, clientSecret);
 
             List<SheetMeta> sheets = await GoogleSheetsApi.ListSheetsAsync(spreadsheetId, accessToken);
@@ -45,7 +47,13 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
 
             EnsureFolderExists();
 
+            var enumSheetSet = BuildEnumSheetSet(enumSheetNames);
+            var collectedEnums = new List<EnumDef>();
             var savedPaths = new List<string>();
+            var generatedCodePaths = new List<string>();
+            var liveTableNames = new HashSet<string>(StringComparer.Ordinal);
+            var liveDataClassNames = new HashSet<string>(StringComparer.Ordinal);
+
             for (int i = 0; i < sheets.Count; i++)
             {
                 SheetMeta meta = sheets[i];
@@ -59,10 +67,10 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
                     continue;
                 }
 
-                string csv;
+                List<List<string>> rows;
                 try
                 {
-                    csv = await GoogleSheetsApi.DownloadCsvAsync(spreadsheetId, meta.SheetId, accessToken);
+                    rows = await GoogleSheetsApi.GetValuesAsync(spreadsheetId, title, accessToken);
                 }
                 catch (Exception e)
                 {
@@ -70,22 +78,13 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
                     continue;
                 }
 
-                if (hasEnumSheet && string.Equals(title, normalizedEnumSheet, StringComparison.Ordinal))
+                if (enumSheetSet.Contains(title))
                 {
-                    try
-                    {
-                        List<string> enumPaths = EnumCodeGenerator.Generate(csv);
-                        savedPaths.AddRange(enumPaths);
-                        Debug.Log($"[GoogleSheetSync] '{title}' → {enumPaths.Count}개 enum 생성");
-                    }
-                    catch (Exception e)
-                    {
-                        Debug.LogWarning($"[GoogleSheetSync] '{title}' enum 처리 실패: {e.Message}");
-                    }
+                    collectedEnums.AddRange(EnumCodeGenerator.CollectFromRows(rows));
                     continue;
                 }
 
-                SheetData data = ConvertCsvToSheetData(csv, title, out string convertError);
+                SheetData data = ConvertRowsToSheetData(rows, title, out string convertError);
                 if (data == null)
                 {
                     Debug.LogWarning($"[GoogleSheetSync] '{title}' 변환 실패: {convertError}");
@@ -96,29 +95,57 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
                 if (string.IsNullOrEmpty(savedPath) == false)
                 {
                     savedPaths.Add(savedPath);
-                }
+                    liveTableNames.Add(SanitizeFileName(data.TableName));
 
-                try
-                {
-                    List<string> generatedPaths = DataContainerCodeGenerator.Generate(data);
-                    if (generatedPaths != null)
+                    List<string> codePaths = DataContainerCodeGenerator.Generate(data);
+                    if (codePaths != null)
                     {
-                        savedPaths.AddRange(generatedPaths);
+                        generatedCodePaths.AddRange(codePaths);
                     }
-                }
-                catch (Exception e)
-                {
-                    Debug.LogWarning($"[GoogleSheetSync] '{title}' 컨테이너 코드 생성 실패: {e.Message}");
+                    liveDataClassNames.Add(DataContainerCodeGenerator.GetDataClassName(data.TableName));
                 }
             }
+
+            string enumPath = EnumCodeGenerator.WriteCombinedFile(
+                collectedEnums,
+                enumOutputFileName);
+
+            List<string> deletedPaths = DeleteStaleJsonFiles(liveTableNames);
+            List<string> deletedCodePaths = DataContainerCodeGenerator.DeleteStaleFiles(liveDataClassNames);
 
             AssetDatabase.Refresh();
 
-            if (savedPaths.Count == 0)
+            if (savedPaths.Count == 0 && deletedPaths.Count == 0 && string.IsNullOrEmpty(enumPath))
             {
                 throw new Exception("모든 시트 처리 실패 (콘솔 경고 확인)");
             }
-            return savedPaths;
+            return new SyncResult
+            {
+                SavedPaths = savedPaths,
+                DeletedPaths = deletedPaths,
+                GeneratedCodePaths = generatedCodePaths,
+                DeletedCodePaths = deletedCodePaths,
+                EnumOutputPath = enumPath,
+                EnumCount = collectedEnums.Count,
+            };
+        }
+
+        private static HashSet<string> BuildEnumSheetSet(IEnumerable<string> names)
+        {
+            var set = new HashSet<string>(StringComparer.Ordinal);
+            if (names == null)
+            {
+                return set;
+            }
+            foreach (string raw in names)
+            {
+                if (string.IsNullOrWhiteSpace(raw))
+                {
+                    continue;
+                }
+                set.Add(raw.Trim());
+            }
+            return set;
         }
 
         public static string ExtractSpreadsheetId(string url)
@@ -135,14 +162,49 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
             return m.Groups["id"].Value;
         }
 
-        private static SheetData ConvertCsvToSheetData(string csv, string tableName, out string error)
+        /// <summary>
+        /// Removes JSON files in <c>Resources/GoogleSheetData/</c> whose base name
+        /// is not in <paramref name="liveTableNames"/>. Their .meta sidecars are
+        /// removed too. This keeps the local cache in sync when a sheet is
+        /// renamed/deleted in Google Sheets.
+        /// </summary>
+        private static List<string> DeleteStaleJsonFiles(HashSet<string> liveTableNames)
+        {
+            var deleted = new List<string>();
+            string folder = Path.Combine(ResourcesRoot, DataSubFolder);
+            if (Directory.Exists(folder) == false)
+            {
+                return deleted;
+            }
+            foreach (string jsonPath in Directory.GetFiles(folder, "*.json"))
+            {
+                string baseName = Path.GetFileNameWithoutExtension(jsonPath);
+                if (string.IsNullOrEmpty(baseName)) continue;
+                if (liveTableNames.Contains(baseName)) continue;
+
+                try
+                {
+                    File.Delete(jsonPath);
+                    string metaPath = jsonPath + ".meta";
+                    if (File.Exists(metaPath)) File.Delete(metaPath);
+                    deleted.Add(jsonPath.Replace('\\', '/'));
+                    Debug.Log($"[GoogleSheetSync] 시트에서 사라진 '{baseName}' → 로컬 JSON 삭제");
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[GoogleSheetSync] '{baseName}' 삭제 실패: {e.Message}");
+                }
+            }
+            return deleted;
+        }
+
+        private static SheetData ConvertRowsToSheetData(List<List<string>> rows, string tableName, out string error)
         {
             error = null;
 
-            List<List<string>> rows = CsvParser.Parse(csv);
             if (rows == null || rows.Count == 0)
             {
-                error = "빈 CSV";
+                error = "빈 시트";
                 return null;
             }
             if (rows.Count < 2)
@@ -288,5 +350,15 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
             }
             return sb.ToString();
         }
+    }
+
+    public class SyncResult
+    {
+        public List<string> SavedPaths = new List<string>();
+        public List<string> DeletedPaths = new List<string>();
+        public List<string> GeneratedCodePaths = new List<string>();
+        public List<string> DeletedCodePaths = new List<string>();
+        public string EnumOutputPath;
+        public int EnumCount;
     }
 }

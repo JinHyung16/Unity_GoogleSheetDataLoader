@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Jinhyeong_JsonParsing;
 
 namespace Jinhyeong_GameData
@@ -19,6 +20,16 @@ namespace Jinhyeong_GameData
         {
             SetLoaded(false);
         }
+
+        public virtual bool Validate(out string errorMessage)
+        {
+            errorMessage = null;
+            return true;
+        }
+
+        public virtual void AfterAllTableLoaded()
+        {
+        }
     }
 
     public abstract class DataContainer<TKey, TValue>
@@ -29,6 +40,11 @@ namespace Jinhyeong_GameData
         protected abstract void MainCollectionAdd(TKey key, TValue value);
         protected abstract void OnLoadCompleted();
         protected abstract TValue Parse(DataTable table, int row);
+
+        protected virtual IEqualityComparer<TKey> GetEqualityComparer()
+        {
+            return null;
+        }
 
         public override void Load(DataTable table)
         {

@@ -82,7 +82,10 @@ namespace Jinhyeong_GameData
         protected override void MainCollectionConstructor(int count)
         {
             _list = new List<TValue>(count);
-            _dictByKey = new Dictionary<TKey, TValue>(count);
+            IEqualityComparer<TKey> comparer = GetEqualityComparer();
+            _dictByKey = comparer != null
+                ? new Dictionary<TKey, TValue>(count, comparer)
+                : new Dictionary<TKey, TValue>(count);
         }
 
         protected override void MainCollectionAdd(TKey key, TValue value)

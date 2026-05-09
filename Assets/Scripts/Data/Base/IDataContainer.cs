@@ -8,5 +8,7 @@ namespace Jinhyeong_GameData
         bool Loaded { get; }
         void Load(DataTable table);
         void Clear();
+        bool Validate(out string errorMessage);
+        void AfterAllTableLoaded();
     }
 }

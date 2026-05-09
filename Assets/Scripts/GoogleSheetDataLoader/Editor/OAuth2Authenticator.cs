@@ -13,7 +13,7 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
     {
         private const string AuthEndpoint = "https://accounts.google.com/o/oauth2/v2/auth";
         private const string TokenEndpoint = "https://oauth2.googleapis.com/token";
-        private const string Scopes = "https://www.googleapis.com/auth/drive.readonly";
+        private const string Scopes = "https://www.googleapis.com/auth/spreadsheets";
         private const int RefreshSafetyMarginSeconds = 60;
         private const int RequestTimeoutSeconds = 30;
 

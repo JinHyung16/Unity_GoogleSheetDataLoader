@@ -11,10 +11,10 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
         private const string PrefKeyUrl = "GoogleSheetDataLoader.Url";
         private const string PrefKeyClientId = "GoogleSheetDataLoader.OAuth.ClientId";
         private const string PrefKeyClientSecret = "GoogleSheetDataLoader.OAuth.ClientSecret";
-        private const string PrefKeyEnumSheetName = "GoogleSheetDataLoader.EnumSheetName";
         private const string PrefKeySelectedTab = "GoogleSheetDataLoader.SelectedTab";
-
-        private const string DefaultEnumSheetName = "_Enum";
+        private const string PrefKeyEnumSheets = "GoogleSheetDataLoader.EnumSheets";
+        private const string PrefKeyEnumFile = "GoogleSheetDataLoader.EnumFile";
+        private const string DefaultEnumSheets = "_Enum";
 
         private const float SIZE_W = 600f;
         private const float SIZE_H = 420f;
@@ -27,7 +27,8 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
         private string _sheetUrl;
         private string _clientId;
         private string _clientSecret;
-        private string _enumSheetName;
+        private string _enumSheets;
+        private string _enumFile;
         private string _lastMessage;
         private MessageType _lastMessageType = MessageType.Info;
         private bool _busy;
@@ -47,7 +48,8 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
             _sheetUrl = EditorPrefs.GetString(PrefKeyUrl, string.Empty);
             _clientId = EditorPrefs.GetString(PrefKeyClientId, string.Empty);
             _clientSecret = EditorPrefs.GetString(PrefKeyClientSecret, string.Empty);
-            _enumSheetName = EditorPrefs.GetString(PrefKeyEnumSheetName, DefaultEnumSheetName);
+            _enumSheets = EditorPrefs.GetString(PrefKeyEnumSheets, DefaultEnumSheets);
+            _enumFile = EditorPrefs.GetString(PrefKeyEnumFile, EnumCodeGenerator.DefaultFileName);
             _selectedTab = EditorPrefs.GetInt(PrefKeySelectedTab, TabAuth);
         }
 
@@ -117,21 +119,25 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
 
         private void DrawSyncTab()
         {
-            EditorGUILayout.LabelField("DB 로드 / Enum 자동 생성", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("DB 로드", EditorStyles.boldLabel);
             EditorGUILayout.Space(4);
 
             EditorGUILayout.HelpBox(
                 "[로드 규칙]\n" +
-                "- 스프레드시트의 모든 시트를 순회하며 처리\n" +
-                "- 시트명 / 컬럼명이 '#'로 시작하면 제외 (주석/임시용)\n\n" +
-                "[Enum 시트]\n" +
-                "- 'Enum 시트명' 과 정확히 일치하는 시트는 C# enum 코드로 생성\n" +
-                "  → Assets/Scripts/GeneratedEnums/<EnumName>.cs (asmdef 자동 생성)\n" +
-                "  → 시트 row1 = enum 타입명, row2+ = enum 멤버\n\n" +
-                "[일반 시트]\n" +
-                "- Assets/Resources/GoogleSheetData/<시트명>.json 으로 저장\n" +
+                "- 스프레드시트의 모든 시트를 순회하며 Assets/Resources/GoogleSheetData/<시트명>.json 으로 저장\n" +
+                "- 시트명 / 컬럼명이 '#'로 시작하면 제외 (주석/임시용)\n" +
                 "- row1 = 컬럼명 / row2 = 타입 / row3+ = 데이터\n" +
-                "- 배열 셀 구분자: '|'",
+                "- 배열 셀 구분자: '|'\n\n" +
+                "[Enum 시트]\n" +
+                "- 'Enum 시트명'에 적힌 시트는 JSON으로 저장하지 않고 enum으로 변환\n" +
+                "- 콤마로 여러 시트 지정 가능 (예: _Enum, Common_Enum)\n" +
+                "- 시트의 컬럼 헤더 = enum 타입명, Row 2+ = enum 멤버\n" +
+                "- 모든 enum 시트의 결과가 단일 파일에 합쳐 저장됨 → Assets/Scripts/GeneratedEnums/<출력파일>\n\n" +
+                "[자동 정리]\n" +
+                "- 시트에서 사라진 테이블의 JSON 자동 삭제\n" +
+                "- 시트에서 사라진 테이블의 자동 생성 코드(Generated/*.cs)도 같이 삭제\n" +
+                "  (PartialClass/ 사용자 코드는 안 건드림 → orphan 컴파일 에러 시 직접 정리)\n" +
+                "- enum 시트가 모두 비면 출력 파일도 삭제됨",
                 MessageType.Info);
 
             EditorGUILayout.Space(6);
@@ -140,7 +146,8 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
             EditorGUILayout.Space(4);
 
             DrawTextField("스프레드시트 URL", PrefKeyUrl, ref _sheetUrl, masked: false);
-            DrawTextField("Enum 시트명 (비우면 enum 자동 생성 안 함)", PrefKeyEnumSheetName, ref _enumSheetName, masked: false);
+            DrawTextField("Enum 시트명 (콤마 구분)", PrefKeyEnumSheets, ref _enumSheets, masked: false);
+            DrawTextField("Enum 출력 파일명", PrefKeyEnumFile, ref _enumFile, masked: false);
 
             EditorGUILayout.Space(8);
 
@@ -284,9 +291,36 @@ namespace Jinhyeong_GoogleSheetDataLoader.Editor
                 _lastMessageType = MessageType.Info;
                 Repaint();
 
-                List<string> savedPaths = await SheetJsonConverter.SyncAllAsync(_sheetUrl, _clientId, _clientSecret, _enumSheetName);
+                string[] enumSheetNames = (_enumSheets ?? string.Empty).Split(',');
+                SyncResult result = await SheetJsonConverter.SyncAllAsync(
+                    _sheetUrl, _clientId, _clientSecret, enumSheetNames, _enumFile);
 
-                _lastMessage = $"{savedPaths.Count}개 파일 저장 완료\n" + string.Join("\n", savedPaths);
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine(
+                    $"JSON {result.SavedPaths.Count}개 저장 / {result.DeletedPaths.Count}개 삭제 · " +
+                    $"코드 {result.GeneratedCodePaths.Count}개 생성 / {result.DeletedCodePaths.Count}개 삭제 · " +
+                    $"enum {result.EnumCount}개");
+                if (result.SavedPaths.Count > 0)
+                {
+                    sb.AppendLine("[JSON 저장]");
+                    sb.AppendLine(string.Join("\n", result.SavedPaths));
+                }
+                if (result.DeletedPaths.Count > 0)
+                {
+                    sb.AppendLine("[JSON 삭제 (시트에서 사라짐)]");
+                    sb.AppendLine(string.Join("\n", result.DeletedPaths));
+                }
+                if (result.DeletedCodePaths.Count > 0)
+                {
+                    sb.AppendLine("[자동 생성 코드 삭제 (시트에서 사라짐)]");
+                    sb.AppendLine(string.Join("\n", result.DeletedCodePaths));
+                }
+                if (string.IsNullOrEmpty(result.EnumOutputPath) == false)
+                {
+                    sb.AppendLine("[Enum 출력]");
+                    sb.AppendLine(result.EnumOutputPath);
+                }
+                _lastMessage = sb.ToString().TrimEnd();
                 _lastMessageType = MessageType.Info;
                 Debug.Log($"[GoogleSheetSync] {_lastMessage}");
             }

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using UnityEngine;
 
 namespace Jinhyeong_GameData
 {
@@ -7,6 +8,7 @@ namespace Jinhyeong_GameData
         where TValue : class, IDataKey<TKey>, IData
     {
         protected Dictionary<TKey, TValue> _dict;
+        private List<TValue> _valuesCache;
 
         public override int Count
         {
@@ -25,6 +27,22 @@ namespace Jinhyeong_GameData
             get
             {
                 return _dict;
+            }
+        }
+
+        public IReadOnlyList<TValue> AllValues
+        {
+            get
+            {
+                if (_dict == null)
+                {
+                    return null;
+                }
+                if (_valuesCache == null)
+                {
+                    _valuesCache = new List<TValue>(_dict.Values);
+                }
+                return _valuesCache;
             }
         }
 
@@ -59,11 +77,20 @@ namespace Jinhyeong_GameData
 
         protected override void MainCollectionConstructor(int count)
         {
-            _dict = new Dictionary<TKey, TValue>(count);
+            IEqualityComparer<TKey> comparer = GetEqualityComparer();
+            _dict = comparer != null
+                ? new Dictionary<TKey, TValue>(count, comparer)
+                : new Dictionary<TKey, TValue>(count);
+            _valuesCache = null;
         }
 
         protected override void MainCollectionAdd(TKey key, TValue value)
         {
+            if (_dict.ContainsKey(key))
+            {
+                Debug.LogError($"{Name} DB의 id '{key}'가 중복되었습니다");
+                return;
+            }
             _dict.Add(key, value);
         }
 
@@ -78,6 +105,7 @@ namespace Jinhyeong_GameData
             {
                 _dict.Clear();
             }
+            _valuesCache = null;
         }
     }
 }

@@ -194,6 +194,29 @@ namespace Jinhyeong_GameData
 
                 container.Load(table);
             }
+
+            foreach (KeyValuePair<Type, IDataContainer> kv in _containers)
+            {
+                IDataContainer container = kv.Value;
+                if (container == null || container.Loaded == false)
+                {
+                    continue;
+                }
+                if (container.Validate(out string errorMessage) == false)
+                {
+                    Debug.LogError($"[DataManager] '{container.Name}' 검증 실패: {errorMessage}");
+                }
+            }
+
+            foreach (KeyValuePair<Type, IDataContainer> kv in _containers)
+            {
+                IDataContainer container = kv.Value;
+                if (container == null || container.Loaded == false)
+                {
+                    continue;
+                }
+                container.AfterAllTableLoaded();
+            }
         }
 
         private static Type[] TryGetTypes(Assembly assembly)
